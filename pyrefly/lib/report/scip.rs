@@ -59,6 +59,7 @@ use scip::types::TextEncoding;
 use scip::types::ToolInfo;
 use scip::types::descriptor::Suffix;
 use starlark_map::small_map::SmallMap;
+use starlark_map::small_set::SmallSet;
 
 use crate::config::config::ConfigFile;
 use crate::lsp::wasm::hover::HoverOptions;
@@ -240,13 +241,27 @@ impl Indexer<'_> {
         ast.body
             .iter()
             .for_each(|x| collect_enclosing_ranges(x, &mut enclosing_ranges));
+        // Only the first binding of a symbol defines it, and later ones refer to it. A parameter
+        // is defined again by each overload.
+        let mut parameters = SmallSet::new();
+        ast.body
+            .iter()
+            .for_each(|x| collect_parameters(x, &mut parameters));
+        let mut defined = SmallSet::new();
         occurrences.extend(definitions.iter().map(|(range, symbol)| {
+            let symbol = format_scip_symbol(self.project, symbol);
+            let is_definition = defined.insert(symbol.clone()) || parameters.contains(range);
             Occurrence {
                 range: scip_range(&module, *range),
-                symbol: format_scip_symbol(self.project, symbol),
-                symbol_roles: SymbolRole::Definition as i32,
+                symbol,
+                symbol_roles: if is_definition {
+                    SymbolRole::Definition as i32
+                } else {
+                    0
+                },
                 enclosing_range: enclosing_ranges
                     .get(range)
+                    .filter(|_| is_definition)
                     .map_or_else(Vec::new, |x| scip_range(&module, *x)),
                 ..Default::default()
             }
@@ -688,6 +703,13 @@ fn collect_classes<'a>(x: &'a Stmt, classes: &mut Vec<&'a StmtClassDef>) {
         classes.push(x);
     }
     x.recurse(&mut |x| collect_classes(x, classes));
+}
+
+fn collect_parameters(x: &Stmt, ranges: &mut SmallSet<TextRange>) {
+    if let Stmt::FunctionDef(x) = x {
+        ranges.extend(x.parameters.iter().map(|x| x.name().range));
+    }
+    x.recurse(&mut |x| collect_parameters(x, ranges));
 }
 
 /// Maps the name of every function and class to its whole definition, decorators included.

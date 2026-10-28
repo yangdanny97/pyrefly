@@ -38,7 +38,6 @@ use pyrefly_types::type_var::Variance;
 use pyrefly_types::types::Type;
 use pyrefly_util::absolutize::Absolutize as _;
 use pyrefly_util::lined_buffer::LineNumber;
-use pyrefly_util::visit::Visit;
 use regex::Regex;
 use ruff_python_ast::AnyNodeRef;
 use ruff_python_ast::Identifier;
@@ -840,7 +839,7 @@ fn resolve_hovered_type(
         use ruff_python_ast::Expr;
         let ast = ast?;
         let mut result = None;
-        ast.visit(&mut |expr: &Expr| {
+        Ast::visit_covering_exprs(ast, position, &mut |expr: &Expr| {
             if let Expr::Call(call) = expr
                 && call.func.range().contains(position)
             {

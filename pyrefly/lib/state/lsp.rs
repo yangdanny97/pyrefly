@@ -1243,7 +1243,7 @@ impl<'a> Transaction<'a> {
             }
         }
         let mut res = None;
-        mod_module.visit(&mut |x| f(x, position, &mut res));
+        Ast::visit_covering_exprs(&mod_module, position, &mut |x| f(x, position, &mut res));
         res
     }
 

@@ -192,6 +192,14 @@ pub fn write_scip(
     Ok(())
 }
 
+/// Top-level names whose kind in the bundled stubs differs from how other indexers name them:
+/// `Any` was a variable in older stubs, and `NotImplemented` and `Ellipsis` are named as types.
+const SPECIAL_FORMS: &[(&str, &str, Suffix)] = &[
+    ("typing", "Any", Suffix::Term),
+    ("builtins", "NotImplemented", Suffix::Type),
+    ("builtins", "Ellipsis", Suffix::Type),
+];
+
 struct Indexer<'a> {
     transaction: &'a Transaction<'a>,
     project_root: &'a Path,
@@ -479,7 +487,7 @@ impl Indexer<'_> {
             .path()
             .as_path()
             .starts_with(self.project_root);
-        let package = self.package(&definition.module, handle.sys_info().dupe());
+        let package = self.package(&definition.module, handle);
         // A submodule accessed as an attribute resolves to the empty range at the module's start.
         if definition.metadata.symbol_kind() == Some(SymbolKind::Module)
             || definition.definition_range.is_empty()
@@ -508,46 +516,63 @@ impl Indexer<'_> {
         }
         let handle = Handle::new(module.name(), module.path().dupe(), sys_info);
         let ast = self.transaction.get_ast(&handle)?;
-        let table: Arc<SmallMap<_, _>> =
-            Arc::new(definitions(module.name(), &ast).into_iter().collect());
+        let mut table: SmallMap<_, _> = definitions(module.name(), &ast).into_iter().collect();
+        for (module_name, name, suffix) in SPECIAL_FORMS {
+            if module.name().as_str() != *module_name {
+                continue;
+            }
+            for symbol in table.values_mut() {
+                if let ScipSymbol::Global(descriptors) = symbol
+                    && let [_, descriptor] = descriptors.as_mut_slice()
+                    && descriptor.name == *name
+                {
+                    descriptor.suffix = (*suffix).into();
+                }
+            }
+        }
+        let table = Arc::new(table);
         self.definitions.lock().insert(key, table.dupe());
         Some(table)
     }
 
-    fn package(&self, module: &Module, sys_info: SysInfo) -> Package {
-        match module.path().details() {
-            ModulePathDetails::BundledTypeshed(_) => {
-                let version = sys_info.version();
+    /// The package of a module referenced from `handle`, whose site-packages are searched for
+    /// installed distributions.
+    fn package(&self, module: &Module, handle: &Handle) -> Package {
+        let bundled = matches!(module.path().details(), ModulePathDetails::BundledTypeshed(_));
+        if !bundled && module.path().as_path().starts_with(self.project_root) {
+            return self.project.clone();
+        }
+        // Match by top-level module, so that bundled stubs get the installed package too, even for
+        // a stdlib module like `typing_extensions`.
+        let top_level = module.name().first_component();
+        let config = self.transaction.get_config(handle);
+        let installed = config
+            .iter()
+            .flat_map(|config| config.site_package_path())
+            .find_map(|root| {
+                let installed = self
+                    .distributions
+                    .lock()
+                    .entry(root.clone())
+                    .or_insert_with(|| Arc::new(distributions(root)))
+                    .dupe();
+                installed.get(&top_level).cloned()
+            });
+        installed.unwrap_or_else(|| {
+            if bundled {
+                let version = handle.sys_info().version();
                 Package {
                     name: "python-stdlib".to_owned(),
                     version: format!("{}.{}", version.major, version.minor),
                 }
+            } else {
+                // Without package metadata, name the package after the top-level module.
+                Package {
+                    name: top_level.to_string(),
+                    version: String::new(),
+                }
             }
-            _ if module.path().as_path().starts_with(self.project_root) => self.project.clone(),
-            _ => {
-                // Match by top-level module, so that bundled stubs get the installed package too.
-                let top_level = module.name().first_component();
-                let handle = Handle::new(module.name(), module.path().dupe(), sys_info);
-                let config = self.transaction.get_config(&handle);
-                config
-                    .iter()
-                    .flat_map(|config| config.site_package_path())
-                    .find_map(|root| {
-                        let installed = self
-                            .distributions
-                            .lock()
-                            .entry(root.clone())
-                            .or_insert_with(|| Arc::new(distributions(root)))
-                            .dupe();
-                        installed.get(&top_level).cloned()
-                    })
-                    // Without package metadata, name the package after the top-level module.
-                    .unwrap_or_else(|| Package {
-                        name: top_level.to_string(),
-                        version: String::new(),
-                    })
-            }
-        }
+        })
     }
 }
 

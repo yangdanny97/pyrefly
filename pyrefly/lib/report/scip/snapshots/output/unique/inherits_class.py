@@ -7,7 +7,7 @@ class A:
 #         ^^^^ definition  snapshot-util 0.1 inherits_class/A#x().(self)
 #                  ^^^ reference  python-stdlib 3.13 builtins/int#
         raise NotImplemented
-#             ^^^^^^^^^^^^^^ reference  python-stdlib 3.13 builtins/NotImplemented.
+#             ^^^^^^^^^^^^^^ reference  python-stdlib 3.13 builtins/NotImplemented#
 
     def matched_despite_different_type(self, x: int):
 #       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ definition  snapshot-util 0.1 inherits_class/A#matched_despite_different_type().

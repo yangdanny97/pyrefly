@@ -71,6 +71,7 @@ use crate::report::scip::symbols::descriptor;
 use crate::state::lsp::FindDefinitionItemWithDocstring;
 use crate::state::lsp::FindPreference;
 use crate::state::state::Transaction;
+use crate::types::globals::ImplicitGlobal;
 
 #[cfg(test)]
 mod snapshot;
@@ -474,10 +475,25 @@ impl Indexer<'_> {
     fn reference(&self, handle: &Handle, module: &Module, x: &Use) -> Option<(String, bool)> {
         let preference = preference();
         let definition = match x.kind {
-            UseKind::Name => self
-                .transaction
-                .find_definition_for_name_use(handle, &x.identifier, preference)
-                .ok()?,
+            UseKind::Name => {
+                let definition = self
+                    .transaction
+                    .find_definition_for_name_use(handle, &x.identifier, preference)
+                    .ok()
+                    .flatten();
+                // Implicit module globals like `__name__` have no definition, so they are named
+                // as stdlib builtins.
+                if definition.is_none()
+                    && ImplicitGlobal::implicit_globals(false).any(|g| *g.name() == x.identifier.id)
+                {
+                    let descriptors = vec![
+                        descriptor("builtins", Suffix::Namespace),
+                        descriptor(&x.identifier.id, Suffix::Type),
+                    ];
+                    return Some((global_symbol(&stdlib_package(handle), descriptors), true));
+                }
+                definition
+            }
             UseKind::Import | UseKind::Attribute | UseKind::Keyword => {
                 let definitions = self
                     .transaction
@@ -575,11 +591,7 @@ impl Indexer<'_> {
             });
         installed.unwrap_or_else(|| {
             if bundled {
-                let version = handle.sys_info().version();
-                Package {
-                    name: "python-stdlib".to_owned(),
-                    version: format!("{}.{}", version.major, version.minor),
-                }
+                stdlib_package(handle)
             } else {
                 // Without package metadata, name the package after the top-level module.
                 Package {
@@ -588,6 +600,14 @@ impl Indexer<'_> {
                 }
             }
         })
+    }
+}
+
+fn stdlib_package(handle: &Handle) -> Package {
+    let version = handle.sys_info().version();
+    Package {
+        name: "python-stdlib".to_owned(),
+        version: format!("{}.{}", version.major, version.minor),
     }
 }
 
